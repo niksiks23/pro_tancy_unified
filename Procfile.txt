@@ -1,0 +1,2 @@
+web: gunicorn pro_tancy_unified:app
+worker: python pro_tancy_unified.py
