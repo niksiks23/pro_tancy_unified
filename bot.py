@@ -95,7 +95,7 @@ def start(message):
     markup = telebot.types.InlineKeyboardMarkup()
     app_button = telebot.types.InlineKeyboardButton(
         "📱 Открыть PRO ТАНЦЫ", 
-        url=" https://niksiks23.github.io/pro-tancy-app/"  # ЗАМЕНИТЕ НА ССЫЛКУ ВАШЕГО ПРИЛОЖЕНИЯ
+        url="https://niksiks23.github.io/pro-tancy-app/"  # ЗАМЕНИТЕ НА ССЫЛКУ ВАШЕГО ПРИЛОЖЕНИЯ
     )
     markup.add(app_button)
     
