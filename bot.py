@@ -1,12 +1,32 @@
-import telebot
-import sqlite3
-from datetime import datetime, timedelta
+import requests
 import threading
 import time
-import schedule
 import os
-import re
-from flask import Flask
+import sys
+
+# ========== ЗАЩИТА ОТ ДВОЙНОГО ЗАПУСКА ==========
+try:
+    import fcntl
+    lock_file = '/tmp/bot.lock'
+    f = open(lock_file, 'w')
+    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except:
+    print("❌ Бот уже запущен в другом месте!")
+    sys.exit(1)
+
+# ========== САМО-ПИНГОВАЛКА ==========
+def keep_alive():
+    """Пинговать себя каждые 4 минуты"""
+    bot_url = os.environ.get('RENDER_URL', 'https://ВАШ_БОТ_URL.onrender.com')
+    while True:
+        try:
+            requests.get(f"{bot_url}/health", timeout=5)
+            print("✅ Keep-alive ping")
+        except:
+            print("❌ Keep-alive failed")
+        time.sleep(240)  # 4 минуты
+
+threading.Thread(target=keep_alive, daemon=True).start()
 
 # ========== НАСТРОЙКИ ==========
 TOKEN = os.environ.get('BOT_TOKEN')
