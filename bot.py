@@ -17,7 +17,7 @@ except:
 # ========== САМО-ПИНГОВАЛКА ==========
 def keep_alive():
     """Пинговать себя каждые 4 минуты"""
-    bot_url = os.environ.get('RENDER_URL', 'https://ВАШ_БОТ_URL.onrender.com')
+    bot_url = os.environ.get('RENDER_URL', 'https://pro-tancy-bot.onrender.com')
     while True:
         try:
             requests.get(f"{bot_url}/health", timeout=5)
