@@ -1,0 +1,589 @@
+import telebot
+import sqlite3
+from datetime import datetime, timedelta
+import threading
+import time
+import schedule
+import os
+import requests
+from flask import Flask
+import signal
+import sys
+
+# ========== НАСТРОЙКИ ==========
+TOKEN = os.environ.get('BOT_TOKEN')
+ADMIN_IDS = [5276187604]  # ← ВАШ ID
+bot = telebot.TeleBot(TOKEN)
+bot.set_webhook()  # Отключаем вебхуки на всякий случай
+
+# ========== FLASK ДЛЯ RENDER ==========
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🤖РИТМ Бот работает!"
+
+@app.route('/health')
+def health():
+    return "OK", 200
+
+@app.route('/ping')
+def ping():
+    """Для пингования бота"""
+    return "pong", 200
+
+# ========== БАЗА ДАННЫХ ==========
+conn = sqlite3.connect('users.db', check_same_thread=False)
+c = conn.cursor()
+c.execute('''CREATE TABLE IF NOT EXISTS users
+             (user_id INTEGER PRIMARY KEY, 
+              group_name TEXT, 
+              notify_time INTEGER DEFAULT 30,
+              notify_count INTEGER DEFAULT 1)''')
+conn.commit()
+
+# ========== РАСПИСАНИЕ ==========
+SCHEDULE = {
+    'Понедельник': [
+        '17:15 Ритмика (3-5 лет)',
+        '18:00 Калланетика',
+        '19:00 Латина (старшая)',
+        '20:00 Латина (новички)'
+    ],
+    'Вторник': [
+        '18:00 Бальные танцы (5-6 лет)',
+        '19:00 Бальные танцы (7-9 лет)'
+    ],
+    'Среда': [
+        '18:00 Бальные танцы',
+        '19:00 Латина (старшая)',
+        '20:00 Индивидуальные'
+    ],
+    'Четверг': [
+        '18:00 Бальные танцы (5-6 лет)',
+        '19:00 Бальные танцы (9-12 лет)',
+        '20:00 Бачата (новички)'
+    ],
+    'Пятница': [
+        '17:15 Ритмика (3-5 лет)',
+        '18:00 Бальные танцы',
+        '19:00 Индивидуальные'
+    ],
+    'Суббота': [
+        '9:00 Калланетика',
+        '10:00 Бачата + Латина',
+        '11:00 Бальные танцы (9-12 лет)',
+        '12:00 Индивидуальные'
+    ],
+    'Воскресенье': []
+}
+
+# Дни недели на русском
+DAYS_RU = {
+    'Monday': 'Понедельник',
+    'Tuesday': 'Вторник',
+    'Wednesday': 'Среда',
+    'Thursday': 'Четверг',
+    'Friday': 'Пятница',
+    'Saturday': 'Суббота',
+    'Sunday': 'Воскресенье'
+}
+
+# ========== ФУНКЦИИ ДЛЯ СТАБИЛЬНОСТИ ==========
+def restart_bot():
+    """Перезапуск бота при ошибках"""
+    print("🔄 Перезапуск бота...")
+    os.execl(sys.executable, sys.executable, *sys.argv)
+
+def keep_alive():
+    """Пингование самого себя каждые 5 минут"""
+    url = os.environ.get('RENDER_URL', 'http://localhost:10000')
+    while True:
+        try:
+            requests.get(f"{url}/ping", timeout=10)
+            print("✅ Self-ping успешен")
+        except:
+            print("❌ Self-ping failed")
+        time.sleep(240)  # 4 минуты
+
+# Запускаем пинговалку
+threading.Thread(target=keep_alive, daemon=True).start()
+
+# ========== СОЗДАНИЕ КЛАВИАТУР ==========
+def main_menu():
+    """Главное меню с кнопками"""
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    btn1 = telebot.types.KeyboardButton("👥 Выбрать группу")
+    btn2 = telebot.types.KeyboardButton("⏰ Настроить уведомления")
+    btn3 = telebot.types.KeyboardButton("ℹ️ Мои настройки")
+    btn4 = telebot.types.KeyboardButton("📱 Открыть приложение")
+    markup.add(btn1, btn2, btn3, btn4)
+    return markup
+
+def groups_keyboard():
+    """Клавиатура с группами"""
+    markup = telebot.types.InlineKeyboardMarkup(row_width=1)
+    
+    # Получаем все группы
+    groups = set()
+    for day, classes in SCHEDULE.items():
+        for cls in classes:
+            groups.add(cls.split(' ', 1)[1])
+    
+    for group in sorted(groups):
+        markup.add(telebot.types.InlineKeyboardButton(
+            group, 
+            callback_data=f"group_{group}"
+        ))
+    
+    markup.add(telebot.types.InlineKeyboardButton(
+        "❌ Отмена", 
+        callback_data="cancel"
+    ))
+    return markup
+
+def notify_times_keyboard():
+    """Клавиатура для выбора времени уведомления"""
+    markup = telebot.types.InlineKeyboardMarkup(row_width=3)
+    times = [15, 30, 45, 60, 90, 120]
+    buttons = []
+    for t in times:
+        buttons.append(telebot.types.InlineKeyboardButton(
+            f"{t} мин", 
+            callback_data=f"time_{t}"
+        ))
+    markup.add(*buttons)
+    markup.add(telebot.types.InlineKeyboardButton(
+        "❌ Отмена", 
+        callback_data="cancel"
+    ))
+    return markup
+
+def notify_count_keyboard():
+    """Клавиатура для выбора количества уведомлений"""
+    markup = telebot.types.InlineKeyboardMarkup(row_width=3)
+    counts = [1, 2, 3]
+    buttons = []
+    for c in counts:
+        buttons.append(telebot.types.InlineKeyboardButton(
+            f"{c} раз", 
+            callback_data=f"count_{c}"
+        ))
+    markup.add(*buttons)
+    markup.add(telebot.types.InlineKeyboardButton(
+        "❌ Отмена", 
+        callback_data="cancel"
+    ))
+    return markup
+
+# ========== КОМАНДА /start ==========
+@bot.message_handler(commands=['start'])
+def start(message):
+    welcome_text = (
+        "💃 **Добро пожаловать в РИТМ!** 🕺\n\n"
+        "Я помогу вам не пропустить тренировки!\n\n"
+        "👇 **Выберите действие:**"
+    )
+    
+    bot.send_message(
+        message.chat.id, 
+        welcome_text, 
+        parse_mode='Markdown',
+        reply_markup=main_menu()
+    )
+
+# ========== ОБРАБОТКА ТЕКСТОВЫХ КНОПОК ==========
+@bot.message_handler(func=lambda message: True)
+def handle_buttons(message):
+    user_id = message.chat.id
+    text = message.text
+    
+    if text == "👥 Выбрать группу":
+        bot.send_message(
+            user_id,
+            "👥 **Выберите вашу группу:**",
+            parse_mode='Markdown',
+            reply_markup=groups_keyboard()
+        )
+    
+    elif text == "⏰ Настроить уведомления":
+        c.execute("SELECT group_name FROM users WHERE user_id = ?", (user_id,))
+        result = c.fetchone()
+        
+        if not result or not result[0]:
+            bot.send_message(
+                user_id,
+                "❌ Сначала выберите группу!",
+                reply_markup=main_menu()
+            )
+            return
+        
+        bot.send_message(
+            user_id,
+            "⏰ **За сколько минут напоминать?**",
+            parse_mode='Markdown',
+            reply_markup=notify_times_keyboard()
+        )
+    
+    elif text == "ℹ️ Мои настройки":
+        c.execute(
+            "SELECT group_name, notify_time, notify_count FROM users WHERE user_id = ?",
+            (user_id,)
+        )
+        result = c.fetchone()
+        
+        if result and result[0]:
+            group, notify_time, notify_count = result
+            bot.send_message(
+                user_id,
+                f"👥 **Группа:** {group}\n"
+                f"⏰ **Напоминания:** за {notify_time} минут\n"
+                f"📨 **Количество:** {notify_count} раз",
+                parse_mode='Markdown',
+                reply_markup=main_menu()
+            )
+        else:
+            bot.send_message(
+                user_id,
+                "❌ Группа не выбрана",
+                reply_markup=main_menu()
+            )
+    
+    elif text == "📱 Войти в РИТМ":
+        markup = telebot.types.InlineKeyboardMarkup()
+        app_button = telebot.types.InlineKeyboardButton(
+            "📱 Открыть PRO ТАНЦЫ", 
+            url="https://niksiks23.github.io/pro-tancy-app/"  # ← ЗАМЕНИТЕ
+        )
+        markup.add(app_button)
+        bot.send_message(
+            user_id,
+            "Нажмите кнопку ниже чтобы открыть приложение:",
+            reply_markup=markup
+        )
+
+# ========== ОБРАБОТКА INLINE КНОПОК ==========
+@bot.callback_query_handler(func=lambda call: True)
+def callback_handler(call):
+    user_id = call.message.chat.id
+    
+    if call.data == "cancel":
+        bot.answer_callback_query(call.id, "❌ Отменено")
+        bot.edit_message_text(
+            "Действие отменено. Выберите действие:",
+            user_id,
+            call.message.message_id
+        )
+        bot.send_message(user_id, "Главное меню:", reply_markup=main_menu())
+    
+    elif call.data.startswith('group_'):
+        group = call.data.replace('group_', '')
+        
+        c.execute(
+            """INSERT OR REPLACE INTO users 
+               (user_id, group_name, notify_time, notify_count) 
+               VALUES (?, ?, 
+               COALESCE((SELECT notify_time FROM users WHERE user_id = ?), 30),
+               COALESCE((SELECT notify_count FROM users WHERE user_id = ?), 1))""",
+            (user_id, group, user_id, user_id)
+        )
+        conn.commit()
+        
+        bot.answer_callback_query(call.id, f"✅ Выбрана группа: {group}")
+        bot.edit_message_text(
+            f"✅ **Группа сохранена:** {group}",
+            user_id,
+            call.message.message_id,
+            parse_mode='Markdown'
+        )
+        bot.send_message(
+            user_id,
+            "Теперь настройте уведомления:",
+            reply_markup=notify_times_keyboard()
+        )
+    
+    elif call.data.startswith('time_'):
+        minutes = int(call.data.replace('time_', ''))
+        
+        c.execute(
+            "UPDATE users SET notify_time = ? WHERE user_id = ?",
+            (minutes, user_id)
+        )
+        conn.commit()
+        
+        bot.answer_callback_query(call.id, f"✅ Время: {minutes} минут")
+        bot.edit_message_text(
+            f"✅ Напоминания за {minutes} минут\n\n"
+            "Сколько раз напомнить?",
+            user_id,
+            call.message.message_id
+        )
+        bot.send_message(
+            user_id,
+            "Выберите количество:",
+            reply_markup=notify_count_keyboard()
+        )
+    
+    elif call.data.startswith('count_'):
+        count = int(call.data.replace('count_', ''))
+        
+        c.execute(
+            "UPDATE users SET notify_count = ? WHERE user_id = ?",
+            (count, user_id)
+        )
+        conn.commit()
+        
+        c.execute(
+            "SELECT group_name, notify_time FROM users WHERE user_id = ?",
+            (user_id,)
+        )
+        group, time = c.fetchone()
+        
+        bot.answer_callback_query(call.id, "✅ Настройки сохранены")
+        bot.edit_message_text(
+            f"✅ **Настройки сохранены!**\n\n"
+            f"👥 Группа: {group}\n"
+            f"⏰ Напоминания: за {time} минут\n"
+            f"📨 Количество: {count} раз",
+            user_id,
+            call.message.message_id,
+            parse_mode='Markdown'
+        )
+        bot.send_message(
+            user_id,
+            "Главное меню:",
+            reply_markup=main_menu()
+        )
+
+# ========== КОМАНДА /broadcast (ТОЛЬКО ДЛЯ АДМИНА) ==========
+@bot.message_handler(commands=['broadcast'])
+def broadcast_start(message):
+    user_id = message.chat.id
+    
+    if user_id not in ADMIN_IDS:
+        bot.send_message(user_id, "⛔ У вас нет прав администратора")
+        return
+    
+    msg = bot.send_message(
+        user_id,
+        "📢 **Отправьте сообщение для рассылки всем пользователям**",
+        parse_mode='Markdown'
+    )
+    bot.register_next_step_handler(msg, process_broadcast)
+
+def process_broadcast(message):
+    admin_id = message.chat.id
+    
+    c.execute("SELECT user_id FROM users")
+    users = c.fetchall()
+    
+    if not users:
+        bot.send_message(admin_id, "❌ Нет пользователей для рассылки")
+        return
+    
+    status_msg = bot.send_message(
+        admin_id,
+        f"📤 Начинаю рассылку **{len(users)}** пользователям...",
+        parse_mode='Markdown'
+    )
+    
+    success = 0
+    failed = 0
+    
+    for i, (user_id,) in enumerate(users):
+        try:
+            if message.content_type == 'text':
+                bot.send_message(user_id, message.text)
+            elif message.content_type == 'photo':
+                bot.send_photo(
+                    user_id,
+                    message.photo[-1].file_id,
+                    caption=message.caption
+                )
+            elif message.content_type == 'video':
+                bot.send_video(
+                    user_id,
+                    message.video.file_id,
+                    caption=message.caption
+                )
+            elif message.content_type == 'document':
+                bot.send_document(
+                    user_id,
+                    message.document.file_id,
+                    caption=message.caption
+                )
+            
+            success += 1
+            
+            if i % 10 == 0 and i > 0:
+                try:
+                    bot.edit_message_text(
+                        f"📤 Рассылка: **{i}/{len(users)}** отправлено...\n"
+                        f"✅ Успешно: {success}\n"
+                        f"❌ Ошибок: {failed}",
+                        admin_id,
+                        status_msg.message_id,
+                        parse_mode='Markdown'
+                    )
+                except:
+                    pass
+                    
+        except Exception as e:
+            failed += 1
+            print(f"❌ Ошибка отправки {user_id}: {e}")
+    
+    final_text = (
+        f"✅ **Рассылка завершена!**\n\n"
+        f"📊 **Всего:** {len(users)}\n"
+        f"✅ **Успешно:** {success}\n"
+        f"❌ **Ошибок:** {failed}"
+    )
+    
+    try:
+        bot.edit_message_text(
+            final_text,
+            admin_id,
+            status_msg.message_id,
+            parse_mode='Markdown'
+        )
+    except:
+        bot.send_message(admin_id, final_text, parse_mode='Markdown')
+
+# ========== КОМАНДА /stats ==========
+@bot.message_handler(commands=['stats'])
+def show_stats(message):
+    user_id = message.chat.id
+    
+    if user_id not in ADMIN_IDS:
+        bot.send_message(user_id, "⛔ У вас нет прав администратора")
+        return
+    
+    c.execute("SELECT COUNT(*) FROM users")
+    total_users = c.fetchone()[0]
+    
+    c.execute("""
+        SELECT 
+            COALESCE(group_name, 'Без группы') as group_name, 
+            COUNT(*) as count 
+        FROM users 
+        GROUP BY group_name
+        ORDER BY count DESC
+    """)
+    groups = c.fetchall()
+    
+    stats_text = f"📊 **СТАТИСТИКА БОТА**\n\n"
+    stats_text += f"👥 **Всего пользователей:** {total_users}\n\n"
+    stats_text += f"**По группам:**\n"
+    
+    for group, count in groups:
+        stats_text += f"• {group}: {count}\n"
+    
+    bot.send_message(user_id, stats_text, parse_mode='Markdown')
+
+# ========== ПЛАНИРОВЩИК УВЕДОМЛЕНИЙ (С ЗАЩИТОЙ ОТ СБОЕВ) ==========
+def check_trainings():
+    """Проверка тренировок и отправка уведомлений"""
+    try:
+        print(f"🕐 Проверка тренировок... {datetime.now().strftime('%H:%M')}")
+        
+        now = datetime.now()
+        today_en = now.strftime('%A')
+        today_ru = DAYS_RU.get(today_en, '')
+        current_time = now.strftime('%H:%M')
+        
+        today_trainings = SCHEDULE.get(today_ru, [])
+        
+        # Получаем всех пользователей с группами
+        c.execute("SELECT user_id, group_name, notify_time, notify_count FROM users WHERE group_name IS NOT NULL")
+        users = c.fetchall()
+        
+        for user_id, group, notify_time, notify_count in users:
+            for training in today_trainings:
+                if group in training:
+                    training_time = training.split(' ')[0]
+                    
+                    # Конвертируем время тренировки в datetime
+                    t = datetime.strptime(training_time, '%H:%M')
+                    
+                    # Для каждого уведомления
+                    for i in range(notify_count):
+                        minutes_before = notify_time - (i * 15)
+                        
+                        if minutes_before > 0:
+                            notify_t = (t - timedelta(minutes=minutes_before)).strftime('%H:%M')
+                            
+                            # Если время совпадает с текущим
+                            if current_time == notify_t:
+                                try:
+                                    if notify_count == 1:
+                                        msg = (
+                                            f"⏰ **Напоминание о тренировке!**\n\n"
+                                            f"Через {minutes_before} минут: **{group}**\n"
+                                            f"🕐 Время: {training_time}\n\n"
+                                            f"Ждём вас в PRO ТАНЦЫ! 💃🕺"
+                                        )
+                                    else:
+                                        msg = (
+                                            f"⏰ **Напоминание {i+1}/{notify_count}**\n\n"
+                                            f"Через {minutes_before} минут: **{group}**\n"
+                                            f"🕐 Время: {training_time}\n\n"
+                                            f"Ждём вас в PRO ТАНЦЫ! 💃🕺"
+                                        )
+                                    
+                                    bot.send_message(user_id, msg, parse_mode='Markdown')
+                                    print(f"✅ Уведомление {i+1} отправлено {user_id} для {group} в {training_time}")
+                                    
+                                except Exception as e:
+                                    print(f"❌ Ошибка отправки {user_id}: {e}")
+    except Exception as e:
+        print(f"❌ Ошибка в планировщике: {e}")
+
+# Запускаем планировщик с защитой
+def run_scheduler():
+    while True:
+        try:
+            schedule.every(1).minutes.do(check_trainings)
+            while True:
+                schedule.run_pending()
+                time.sleep(30)
+        except Exception as e:
+            print(f"❌ Сбой планировщика: {e}")
+            time.sleep(60)  # Подождать минуту и перезапустить
+
+threading.Thread(target=run_scheduler, daemon=True).start()
+
+# ========== ЗАЩИТА ОТ ДВОЙНОГО ЗАПУСКА ==========
+def cleanup():
+    print("🔄 Останавливаю бота...")
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, cleanup)
+signal.signal(signal.SIGINT, cleanup)
+
+# ========== ЗАПУСК ==========
+if __name__ == '__main__':
+    print("=" * 50)
+    print("🤖 PRO ТАНЦЫ Бот запущен!")
+    print("=" * 50)
+    print(f"👤 Админ ID: {ADMIN_IDS[0]}")
+    print("=" * 50)
+    
+    # Убираем вебхуки
+    bot.remove_webhook()
+    
+    # Запускаем бота с защитой от сбоев
+    def run_bot():
+        while True:
+            try:
+                print("✅ Бот слушает...")
+                bot.infinity_polling(timeout=60, long_polling_timeout=60)
+            except Exception as e:
+                print(f"❌ Ошибка бота: {e}")
+                print("🔄 Перезапуск через 10 секунд...")
+                time.sleep(10)
+    
+    threading.Thread(target=run_bot, daemon=True).start()
+    
+    # Запускаем Flask для Render
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
