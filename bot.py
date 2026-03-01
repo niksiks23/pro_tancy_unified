@@ -82,16 +82,7 @@ def start(message):
         "• Профиль\n\n"
         "🤖 **Что умеет этот бот:**\n"
         "• Присылать уведомления о обновлениях приложения\n\n"
-        "⬇️ **Нажмите кнопку ниже чтобы открыть приложение**"
-    )
-    
-    markup = telebot.types.InlineKeyboardMarkup()
-    app_button = telebot.types.InlineKeyboardButton(
-        "📱 Войти в РИТМ", 
-        url="https://niksiks23.github.io/pro-tancy-app/"  # ← ЗАМЕНИТЕ
-    )
-    markup.add(app_button)
-    
+    )    
     bot.send_message(
         message.chat.id, 
         welcome_text, 
