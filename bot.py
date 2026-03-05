@@ -191,8 +191,6 @@ def start(message):
     
     welcome_text = (
         "🌸 **Добро пожаловать в РИТМ!** 🕺\n\n"
-        "📱 **Наше мобильное приложение:**\n"
-        "https://ваша-ссылка\n\n"
         "🤖 **Я буду присылать вам уведомления о тренировках!**\n\n"
         "👇 **Выберите действие:**"
     )
@@ -383,8 +381,8 @@ def show_my_notifications(user_id):
     text = "📋 **Ваши уведомления:**\n\n"
     for group, notify_time, notify_count in notifications:
         text += f"👥 **{group}**\n"
-        text += f"   ⏰ за {notify_time} мин\n"
-        text += f"   📨 {notify_count} раз(а)\n\n"
+        text += f"⏰ за {notify_time} мин\n"
+        text += f"📨 {notify_count} раз(а)\n\n"
     
     bot.send_message(user_id, text, parse_mode='Markdown', reply_markup=main_menu())
 
